@@ -4,7 +4,7 @@
     <base target="_top">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>moni:co - Gemma</title>
+    <title>moni:co - BGM Edition</title>
     <style>
       :root {
         --primary-color: #2563eb; 
@@ -173,6 +173,25 @@
         font-size: 1rem;
         background: #f9fafb;
       }
+
+      /* 🎧 BGM選択・試聴セクションのスタイルを追加 */
+      .bgm-selector-wrapper {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+      }
+      .bgm-selector-wrapper select {
+        flex: 1;
+      }
+      .listen-btn {
+        width: auto;
+        min-height: var(--input-height);
+        padding: 0 15px;
+        background: #374151 !important;
+        color: white !important;
+        box-shadow: none;
+      }
       
       .action-buttons {
         display: flex;
@@ -243,11 +262,9 @@
       <div>システム起動中...</div>
     </div>
     
-    
-
     <header>
       <h1>moni:co</h1>
-      <span class="badge">Research Ed.</span>
+      <span class="badge">BGM Ed.</span>
     </header>
 
     <main>
@@ -276,6 +293,18 @@
             <select id="videoSource"></select>
           </div>
 
+          <div class="input-group full-width">
+            <label for="bgmChoice">お好みのBGMを選択 (作業前の試聴)</label>
+            <div class="bgm-selector-wrapper">
+              <select id="bgmChoice">
+                <option value="slow">遅いテンポ</option>
+                <option value="normal" selected>普通テンポ</option>
+                <option value="fast">速いテンポ</option>
+              </select>
+              <button type="button" id="listenButton" class="listen-btn">🎵 試聴 / 停止</button>
+            </div>
+          </div>
+
           <div class="input-group">
             <label for="nameInput">名前 (Name)</label>
             <input type="text" id="nameInput" value="" placeholder="例: はなこ">
@@ -289,22 +318,21 @@
           <div class="input-group">
             <label for="toleranceInput">猶予時間 (Seconds to Trigger)</label>
             <input type="number" id="toleranceInput" value="10" min="5">
-            <span style="font-size:0.7rem; color:#9ca3af; display:block; margin-top:4px;">※この秒数以上、低下スコアが50%を超えるとGeminiが起動します</span>
+            <span style="font-size:0.7rem; color:#9ca3af; display:block; margin-top:4px;">※この秒数以上、低下スコアが50%を超えるとBGMが流れます</span>
           </div>
 
-          <div class="input-group">
+          <div class="input-group" style="display: none;">
             <label for="encourageInput">応援間隔 (分)</label>
             <input type="number" id="encourageInput" value="15" min="5">
-            <span style="font-size:0.7rem; color:#9ca3af; display:block; margin-top:4px;">※集中していたら褒める間隔</span>
           </div>
 
         </div>
 
         <div class="action-buttons">
           <button id="cameraButton">📸 カメラ起動・準備 (Check Camera)</button>           
-          <button id="startButton" style="display: none;">🔴 実況開始 (Start)</button>           
-          <button id="stopButton" style="display: none;">⬛ 実況停止 (Stop)</button>
-          <button id="testButton">💬 手動テスト (Manual Test)</button>
+          <button id="startButton" style="display: none;">🔴 監視開始 (Start)</button>           
+          <button id="stopButton" style="display: none;">⬛ 監視停止 (Stop)</button>
+          <button id="testButton">🔊 BGMテスト再生 (15秒間)</button>
         </div>
 
       </div>
@@ -383,6 +411,21 @@
       const toleranceInput = document.getElementById("toleranceInput");
       const encourageInput = document.getElementById("encourageInput");
 
+      // 🎧 BGM用変数と設定（スプレッドシート上の音楽ファイル共有リンクに繋げる設定）
+      const bgmChoice = document.getElementById("bgmChoice");
+      const listenButton = document.getElementById("listenButton");
+      let audioPlayer = new Audio();
+      let bgmTimer = null;
+      let isBgmPlaying = false;
+
+      // ⚠️【重要】スプレッドシートに置いてあるファイル名に合致する「Googleドライブ共有ID」をここに入れてください
+      // 各ファイルのURLの「https://drive.google.com/file/d/【ここの部分】/view」の英数字をコピペしてください
+      const BGM_URLS = {
+          slow: "https://drive.google.com/file/d/1KnObNvElf_MRwnNVQVlCB4hhlHXsc2UQ/view?usp=sharing",
+          normal: "https://drive.google.com/file/d/1FL7rA6G6MbOVUVJ6R0TuUu5Y54Zdv2TL/view?usp=sharing",
+          fast: "https://drive.google.com/file/d/1c9ulxAwdv37a4_azeDlyJq0Rvg7zUjS4/view?usp=drive_link"
+      };
+
       // AIモデル変数
       let detector;       
       let objectDetector; 
@@ -401,31 +444,25 @@
       let lapseStartTime = null;  
       let isTalking = false;      
       
-      // ★修正箇所: 重複定義を削除しました
-      
       let lastPitch=0, lastYaw=0, lastSeenTime=0;
       let previousImageData = null;  
 
-      // 応援タイマー変数
-      let lastEncouragementTime = 0;
-      let currentEncourageInterval = 0; 
-      
-      const TIME_RETRY  =  1 * 60 * 1000; 
-
-      // ★追加: AI呼び出しのクールダウン管理用
+      // クールダウン（一度BGMが鳴ったら、次の判定まで30秒待つ設定）
       let lastAlertTime = 0;
-      const ALERT_COOLDOWN_MS = 60 * 1000; // 1分間は連続で怒られない
+      const ALERT_COOLDOWN_MS = 30 * 1000; 
 
-      // ★追加: 基準の自動追従レート (0.1%ずつ今の姿勢に近づける)
       const ADAPTATION_RATE = 0.001; 
-
-      const Z_THRESHOLD_PITCH = 2.5; // 元 2.5
-      const Z_THRESHOLD_EAR = 1.5;   // 元 1.5
+      const Z_THRESHOLD_PITCH = 2.5; 
+      const Z_THRESHOLD_EAR = 1.5;   
 
       cameraButton.addEventListener("click", prepareSystem); 
       startButton.addEventListener("click", startMonitoring); 
-      stopButton.addEventListener("click", stopCommentary); 
-      testButton.addEventListener("click", () => captureAndCommentary(true)); 
+      stopButton.addEventListener("click", stopMonitoringApp); 
+      
+      // 🎧 試聴ボタンの処理
+      listenButton.addEventListener("click", toggleBgmListen);
+      // 🔊 テスト再生ボタン（15秒）の処理
+      testButton.addEventListener("click", () => triggerBgmAlert("手動テスト")); 
       
       videoSource.addEventListener("change", async (e) => { 
           selectedCameraId = e.target.value; 
@@ -436,29 +473,60 @@
           }
       });
 
-      loadDevices();
+      // 🎧 BGM試聴ボタンのオンオフ処理
+      function toggleBgmListen() {
+          if (isBgmPlaying) {
+              stopBgm();
+              status.textContent = "試聴を停止しました。";
+          } else {
+              const selectedSpeed = bgmChoice.value;
+              audioPlayer.src = BGM_URLS[selectedSpeed];
+              audioPlayer.loop = true;
+              audioPlayer.play()
+                  .then(() => {
+                      isBgmPlaying = true;
+                      status.textContent = `🎵 BGM「${selectedSpeed}」を試聴中...（もう一度押すと停止）`;
+                  })
+                  .catch(err => {
+                      showError("BGMの読み込みに失敗しました。IDが正しいか確認してください。");
+                  });
+          }
+      }
 
-      async function loadDevices() {
-          try {
-              await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-              const devices = await navigator.mediaDevices.enumerateDevices();
-              videoSource.innerHTML = "";
-              devices.forEach(device => {
-                  if (device.kind === 'videoinput') {
-                      const option = document.createElement('option');
-                      option.value = device.deviceId;
-                      option.text = device.label || `Camera ${videoSource.length + 1}`;
-                      videoSource.appendChild(option);
-                  }
+      // 🎧 集中低下時の15秒BGM再生ロジック
+      function triggerBgmAlert(reasonText) {
+          if (isBgmPlaying) stopBgm(); // すでに流れていたら一旦リセット
+
+          const selectedSpeed = bgmChoice.value;
+          audioPlayer.src = BGM_URLS[selectedSpeed];
+          audioPlayer.loop = true;
+          
+          status.textContent = `⚠️ 集中低下度50%突破（原因: ${reasonText}）! BGM「${selectedSpeed}」を15秒間再生します。`;
+          status.classList.add("pulse");
+
+          audioPlayer.play()
+              .then(() => {
+                  isBgmPlaying = true;
+                  // 15秒後に自動停止させるタイマー
+                  bgmTimer = setTimeout(() => {
+                      stopBgm();
+                      status.textContent = "BGM再生（15秒）が終了しました。作業に戻りましょう！";
+                      status.classList.remove("pulse");
+                  }, 15000);
+              })
+              .catch(err => {
+                  console.error(err);
+                  status.textContent = "BGMの再生に失敗しました。";
               });
-              if (videoSource.options.length > 0) {
-                  selectedCameraId = videoSource.value;
-              } else {
-                  showError("カメラが見つかりません。");
-              }
-          } catch (err) {
-              console.error(err);
-              showError("カメラアクセスエラー: " + err.message);
+      }
+
+      function stopBgm() {
+          audioPlayer.pause();
+          audioPlayer.currentTime = 0;
+          isBgmPlaying = false;
+          if (bgmTimer) {
+              clearTimeout(bgmTimer);
+              bgmTimer = null;
           }
       }
 
@@ -470,12 +538,6 @@
 
           try {
               await startCameraStream();
-              
-              try {
-                  window.speechSynthesis.getVoices(); 
-                  const dummy = new SpeechSynthesisUtterance(" ");
-                  dummy.volume = 0; window.speechSynthesis.speak(dummy);
-              } catch (e) {}
 
               const model = faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh;
               detector = await faceLandmarksDetection.createDetector(model, {
@@ -486,7 +548,7 @@
               status.textContent = "スマホ検知AIをロード中...";
               objectDetector = await cocoSsd.load();
 
-              status.textContent = "準備完了！画角を調整して、良い姿勢で「実況開始」を押してください。";
+              status.textContent = "準備完了！好みのBGMを選んで試聴し、画角を調整したら「監視開始」を押してください。";
               status.classList.remove("pulse");
               
               cameraButton.style.display = 'none';
@@ -534,7 +596,7 @@
               return;
           }
 
-          speakCalibrationStart();
+          stopBgm(); // 試聴中の音があれば止める
 
           isCalibrating = true;
           calibrationStartTime = Date.now();
@@ -545,172 +607,25 @@
           if (localAnalysisIntervalId) clearInterval(localAnalysisIntervalId);
           localAnalysisIntervalId = setInterval(runLocalAnalysis, LOCAL_LOOP_MS);
 
+          status.textContent = "学習開始: 15秒間あなたの良い姿勢を学習します。普段通り作業してください。";
           startButton.style.display = 'none';
           stopButton.style.display = 'block';
       }
       
-      function stopCommentary() {
+      function stopMonitoringApp() {
           clearError();
           if (localAnalysisIntervalId) {
               clearInterval(localAnalysisIntervalId);
               localAnalysisIntervalId = null;
           }
-          status.textContent = "実況を停止しました。";
+          stopBgm();
+          status.textContent = "監視を停止しました。";
           status.classList.remove("pulse");
           videoWrapper.style.border = "none";
           updateGauge(0);
           
           stopButton.style.display = 'none';
           startButton.style.display = 'block'; 
-          status.textContent = "実況停止。再度「実況開始」で再開できます。";
-      }
-
-      // GAS URLは以下に固定値として設定
-      const FIXED_GAS_URL = "https://script.google.com/macros/s/AKfycbxlfVJiT__tNAxlgCXHqWq3yHxPYN1h7DUh-X3sMFPJUbgb6oez7OpBisZJqAOeosCB/exec"; // ★ここにGAS URLを入力してください
-      
-      //AIに写真を送るとこ
-      async function captureAndCommentary(isManual = false, triggerReason = "") {
-          const GAS_URL = FIXED_GAS_URL;
-          const userName = nameInput.value.trim();
-          const userGoal = goalInput.value.trim();
-          if (!userName || !userGoal) {
-              showError("名前と目的が必要です");
-              window.alert("【入力エラー】\n名前と作業目的を入力してください！");
-              return;
-          }
-
-          status.textContent = (isManual ? "Manual Test" : "Auto Trigger") + ": Geminiに分析を依頼中...";
-          status.classList.add("pulse"); 
-
-          const context = canvas.getContext("2d");
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const data = canvas.toDataURL("image/jpeg", 0.5).split(",")[1];
-
-          const imagePayload = {
-              currentImage: { data: data, mime_type: "image/jpeg" },
-              previousImage: null, 
-              name: userName,
-              goal: userGoal,
-              reason: triggerReason 
-          };
-
-          fetch(GAS_URL, {
-          method: "POST",
-          mode: "cors",
-          redirect: "follow",
-          body: JSON.stringify(imagePayload),
-          })
-          .then(response => {
-          // レスポンスがJSONじゃない（HTMLとかが返ってきた）場合に備える
-          const contentType = response.headers.get("content-type");
-            if (!contentType || !contentType.includes("application/json")) {
-              throw new TypeError("サーバーからJSONではないデータが返ってきました！(権限エラーの可能性あり)");
-            }
-          return response.json();
-          })
-          .then(data => {
-          commentaryReceived(data); // 元の成功時処理を呼ぶ
-          })
-          .catch(err => {
-          // エラー内容をアラートで出す（スマホ確認用）
-          alert("通信失敗: " + err.message);
-          showError("Fetch Error: " + err.message);
-          isTalking = false;
-          });
-      }
-          
-      function commentaryReceived(data){
-          status.classList.remove("pulse"); 
-
-          if (!data || !data.parts) {
-             showError("Geminiからの応答が空でした。"); 
-             isTalking = false;
-             return;
-          }
-
-          const fullText = data.parts[0].text.trim();
-          const lines = fullText.split('\n');
-          const commentaryText = lines[lines.length - 1].trim(); 
-
-          const utterance = setupSpeechUtterance(commentaryText);
-          window.speechSynthesis.speak(utterance);
-          
-          status.textContent = "Gemini: " + commentaryText;
-          
-          setTimeout(() => { isTalking = false; }, 5000); 
-      }
-      //AIの生成テキストを音声に
-      function setupSpeechUtterance(text) {
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = "ja-JP";
-          utterance.rate = 1.3; 
-
-          const voices = window.speechSynthesis.getVoices();
-          const preferred = ["Microsoft Sayaka", "Google 日本語", "Kyoko"];
-          let selectedVoice = null;
-          for (const name of preferred) {
-             selectedVoice = voices.find(v => v.name.includes(name));
-             if (selectedVoice) break;
-          }
-          if (selectedVoice) utterance.voice = selectedVoice;
-          return utterance;
-      }
-
-      function speakCalibrationStart() {
-          const text = "集中力選手権に備え、15秒間あなたの姿勢を学習します。リラックスして、普段通り作業してください。";
-          const u = setupSpeechUtterance(text);
-          window.speechSynthesis.speak(u);
-          status.textContent = "学習開始: " + text;
-      }
-
-      function speakChampionshipStart(userName, userGoal) {
-          const text = `さあ、始まりました、集中力選手権！${userName}選手、数多の誘惑に打ち勝ち、${userGoal}という目標を達成できるのか！？`;
-          const u = setupSpeechUtterance(text);
-          u.rate = 1.2; 
-          window.speechSynthesis.speak(u);
-          status.textContent = "大会開始: " + text;
-
-          // ★追加: 開始ログをサーバーに送る
-          google.script.run.logSessionStart(userName, userGoal, text);
-      }
-
-      function checkEncouragement(now, userName) {
-          if (isTalking || isCalibrating) return;
-
-          if (now - lastEncouragementTime > currentEncourageInterval) {
-              
-              if (lapseScore < 50) { // 条件緩和(50以下ならOK)
-                  console.log("応援条件クリア！");
-                  isTalking = true;
-                  status.textContent = "Geminiが応援コメントを考えています...";
-                  
-                  const totalMinutes = Math.floor((now - calibrationStartTime) / 60000);
-                  const userGoal = goalInput.value.trim();
-
-                  google.script.run
-                    .withSuccessHandler((text) => {
-                        const u = setupSpeechUtterance(text);
-                        window.speechSynthesis.speak(u);
-                        status.textContent = "応援: " + text;
-                        setTimeout(() => { isTalking = false; }, 5000);
-                    })
-                    .withFailureHandler((err) => {
-                        console.error(err); isTalking = false;
-                    })
-                    .getEncouragement(userName, userGoal, totalMinutes);
-
-                  // 成功時: ユーザー設定値をそのままセット
-                  const settingMin = parseInt(encourageInput.value);
-                  currentEncourageInterval = settingMin * 60 * 1000; 
-              } else {
-                  const msg = `応援スキップ: 集中スコア(${lapseScore.toFixed(1)})が高いため見送りました。1分後に再判定します。`;
-                  status.textContent = msg;
-                  console.log(msg);
-                  currentEncourageInterval = TIME_RETRY;
-              }
-
-              lastEncouragementTime = now;
-          }
       }
 
       function faceAngles(keypoints){
@@ -763,7 +678,6 @@
                       if (elapsed > CALIBRATION_DURATION_MS) finishCalibration();
                   } else {
                       checkConcentration(pitch, yaw, avgEAR, isPhoneDetected);
-                      checkEncouragement(now, nameInput.value.trim());
                   }
               } else {
                   if (!isCalibrating && isPhoneDetected) {
@@ -778,7 +692,6 @@
       function finishCalibration() {
           if (calibrationData.ear.length < 10) { 
               baseline = { earMean: 0.3, earStd: 0.05, pitchMean: 0, pitchStd: 10, yawMean: 0, yawStd: 10 };
-              status.textContent = "学習完了 (データ不足のため標準値)";
           } else {
               baseline.earMean = calculateStats(calibrationData.ear).mean;
               baseline.earStd  = calculateStats(calibrationData.ear).std;
@@ -791,19 +704,10 @@
           }
           
           isCalibrating = false; 
-
-          // ★タイマー初期設定: ユーザー設定値をセット
-          lastEncouragementTime = Date.now();
-          const settingMin = parseInt(encourageInput.value);
-          currentEncourageInterval = settingMin * 60 * 1000; 
-
-          const userName = nameInput.value.trim();
-          const userGoal = goalInput.value.trim();
-          speakChampionshipStart(userName, userGoal);
+          status.textContent = "学習完了！監視モードを開始しました。集中が切れるとBGMが15秒間流れます。";
       }
 
       function checkConcentration(pitch, yaw, avgEAR, isPhoneDetected) {
-          // Zスコア計算 (偏差値のようなもの)
           const pitchZ = calculateZScore(pitch, baseline.pitchMean, baseline.pitchStd, 5.0); 
           const yawDist = Math.abs(yaw - baseline.yawMean); 
           const yawZ = yawDist / Math.max(baseline.yawStd, 5.0);
@@ -811,76 +715,57 @@
           const earDiff = baseline.earMean - avgEAR;
           const earZ = earDiff / Math.max(baseline.earStd, 0.02); 
 
-          const ABSOLUTE_CLOSE_LIMIT = 0.12; // 完全に目を閉じている判定
+          const ABSOLUTE_CLOSE_LIMIT = 0.12; 
 
           let addedScore = 0;
           let reasons = [];
           
-          // --- スコア計算ロジック ---
-          if (isPhoneDetected) {
-              addedScore += 50.0; 
-              reasons.push("スマホ検知");
-          }
-
+          if (isPhoneDetected) { addedScore += 50.0; reasons.push("スマホ検知"); }
           if (pitchZ > Z_THRESHOLD_PITCH) { addedScore += 2.0; reasons.push("姿勢崩れ"); }
           if (yawZ > Z_THRESHOLD_PITCH) { addedScore += 1.5; reasons.push("よそ見"); }
-          
-          if (earZ > Z_THRESHOLD_EAR || avgEAR < ABSOLUTE_CLOSE_LIMIT) { 
-              addedScore += 5.0; 
-              reasons.push("目を閉じている"); 
-          }
+          if (earZ > Z_THRESHOLD_EAR || avgEAR < ABSOLUTE_CLOSE_LIMIT) { addedScore += 5.0; reasons.push("居眠り"); }
 
-          // --- スコアの増減 ---
           if (addedScore > 0) { 
               lapseScore += addedScore; 
               if (lapseScore > 100) lapseScore = 100;
           } else { 
-              lapseScore -= 5.0; // 回復速度
+              lapseScore -= 5.0; 
           } 
 
           if (lapseScore < 0) lapseScore = 0;
-          updateGauge(lapseScore); // ゲージ更新
+          updateGauge(lapseScore); 
 
-          // ★機能追加: 基準の自動追従 (Dynamic Baseline)
-          // 「スマホを見ておらず」かつ「スコアが低い(集中している)」場合のみ、
-          // 現在の姿勢を「新しい基準」として少しずつ取り入れる。
           if (!isPhoneDetected && lapseScore < 30) {
               baseline.pitchMean = baseline.pitchMean * (1 - ADAPTATION_RATE) + pitch * ADAPTATION_RATE;
               baseline.yawMean   = baseline.yawMean   * (1 - ADAPTATION_RATE) + yaw   * ADAPTATION_RATE;
               baseline.earMean   = baseline.earMean   * (1 - ADAPTATION_RATE) + avgEAR * ADAPTATION_RATE;
-              // ※これにより、座り直しても徐々にそこが「ゼロ地点」になります。
           }
 
-          // --- アラート判定とAI呼び出し ---
           let msg = `集中低下スコア: ${lapseScore.toFixed(1)}`;
           if (reasons.length > 0) msg += ` ⚠️検知: ${reasons.join(",")}`;
 
           const now = Date.now();
 
+          // 📈 スコアが50%（LAPSE_THRESHOLD）を超えたときの処理
           if (lapseScore > LAPSE_THRESHOLD) {
               if (lapseStartTime === null) lapseStartTime = now;
               const duration = now - lapseStartTime;
               const toleranceMs = parseInt(toleranceInput.value) * 1000;
-              msg += ` (継続${(duration/1000).toFixed(1)}秒)`;
+              msg += ` (低下継続${(duration/1000).toFixed(1)}秒)`;
 
-              // ★変更: クールダウン中(lastAlertTimeから1分以内)ならAIを呼ばない
               const isCoolingDown = (now - lastAlertTime < ALERT_COOLDOWN_MS);
 
-              if (duration > toleranceMs && !isTalking) {
+              if (duration > toleranceMs && !isBgmPlaying) {
                   if (isCoolingDown) {
-                      // クールダウン中はログだけ出してスルー
-                      console.log("AI呼び出しスキップ: クールダウン中");
                       msg += " [Cooldown]";
                   } else {
-                      // AI呼び出し実行
                       const reasonText = reasons.length > 0 ? reasons.join("、") : "集中力の低下";
-                      status.textContent = `⚠️ Gemini呼び出し中: ${reasonText}...`;
-                      isTalking = true;
-                      lastAlertTime = now; // ★最終アラート時間を更新
+                      lastAlertTime = now; 
                       
-                      captureAndCommentary(false, reasonText);
+                      // 🎧 実況機能の代わりにBGMを15秒間呼び出す
+                      triggerBgmAlert(reasonText);
                       
-                      lapseScore = 0; // スコアをリセットしてあげる
+                      lapseScore = 0; 
                       lapseStartTime = null;
                       return;
                   }
